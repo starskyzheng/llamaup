@@ -12,8 +12,8 @@
 name: Check for new llama.cpp release
 
 on:
-  schedule:
-    - cron: '*/30 * * * *'    # every 30 minutes; llama.cpp releases every 1-3h
+  #schedule:
+  #  - cron: '*/30 * * * *'    # every 30 minutes; llama.cpp releases every 1-3h
   workflow_dispatch:           # allow manual trigger for testing
 
 # Cancel in-flight poll if a newer one is already queued (avoids pile-up)
