@@ -1,4 +1,4 @@
-name: Build & Release llama.cpp CUDA Binaries
+name: zz.Build & Release llama.cpp CUDA Binaries
 
 # ---------------------------------------------------------------------------
 # Triggers
