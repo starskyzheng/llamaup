@@ -174,7 +174,7 @@ jobs:
           #wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | apt-key add -
           #apt-add-repository 'deb https://apt.kitware.com/ubuntu/ focal main'
           apt-get update -qq
-          apt-get install -y --no-install-recommends cmake ninja-build
+          apt-get install -y --no-install-recommends cmake ninja-build libnccl2 libnccl-dev
 
       - name: Restore llama.cpp source cache
         id: cache-src
