@@ -293,6 +293,9 @@ jobs:
 
       - name: Extract and run smoke test
         run: |
+          apt-get install -y --no-install-recommends cmake  \
+            $(dpkg -l | grep -qw libnccl2 || echo libnccl2)
+            
           mkdir -p /tmp/smoke
           tar -xzf /tmp/artifact/*.tar.gz -C /tmp/smoke
 
