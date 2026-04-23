@@ -1,0 +1,555 @@
+name: Build & Release llama.cpp CUDA Binaries
+
+# ---------------------------------------------------------------------------
+# Triggers
+# ---------------------------------------------------------------------------
+on:
+  # schedule:
+    # - cron: '0 4 * * *'          # daily at 04:00 UTC
+
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: 'Upstream repo to build (owner/name, e.g. ggerganov/llama.cpp)'
+        required: false
+        default: 'ggerganov/llama.cpp'
+      source_branch:
+        description: 'Branch name, tag, or full commit SHA to checkout. Leave blank to use llama_version instead.'
+        required: false
+        default: ''
+      llama_version:
+        description: 'Tag/branch/SHA, or "latest" = newest GitHub Release tag; if repo has no releases, default-branch tip commit (ignored if source_branch is set).'
+        required: false
+        default: 'latest'
+      sm_versions:
+        description: 'Comma-separated SM versions to build (e.g. "89,90"). Leave blank for all.'
+        required: false
+        default: ''
+      force_rebuild:
+        description: 'Rebuild even if a release for this version already exists'
+        required: false
+        default: false
+        type: boolean
+      is_backfill:
+        description: 'Mark release as non-latest (used by backfill.yml for historical versions)'
+        required: false
+        default: false
+        type: boolean
+      append_commit_to_release_tag:
+        description: 'Append short commit to release tag & tarball prefix (e.g. b5000-67559e5). Turn off for plain tag names only.'
+        required: false
+        default: true
+        type: boolean
+
+  # client_payload may include: version, source_repo, source_branch, is_backfill, force_rebuild, append_commit_to_release_tag
+  repository_dispatch:
+    types: [new-llama-release]    # external webhook trigger
+
+# ---------------------------------------------------------------------------
+# Permissions needed to create releases and upload assets
+# ---------------------------------------------------------------------------
+permissions:
+  contents: write
+
+# One run per (source repo, ref, version rule); duplicate triggers for the same
+# release tag are skipped via already_built so dispatches never produce duplicate releases.
+concurrency:
+  group: build-${{ github.event.inputs.source_repo || github.event.client_payload.source_repo || 'ggerganov/llama.cpp' }}-${{ github.event.inputs.source_branch || github.event.client_payload.source_branch || '' }}-${{ github.event.inputs.llama_version || github.event.client_payload.version || 'latest' }}
+  cancel-in-progress: false   # queue, don't cancel — let each version finish
+
+# ---------------------------------------------------------------------------
+# Jobs
+# ---------------------------------------------------------------------------
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 0: lint
+  # Runs shellcheck on all scripts to enforce code quality.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run shellcheck
+        run: shellcheck -S warning scripts/*.sh
+
+  # ---------------------------------------------------------------------------
+  # Job 1: resolve-version
+  # Determines the exact llama.cpp tag to build and whether it's already built.
+  # ---------------------------------------------------------------------------
+  resolve-version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      source_repo: ${{ steps.resolve.outputs.source_repo }}
+      source_branch: ${{ steps.resolve.outputs.source_branch }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      release_slug: ${{ steps.resolve.outputs.release_slug }}
+      commit_short: ${{ steps.resolve.outputs.commit_short }}
+      append_commit_to_release_tag: ${{ steps.resolve.outputs.append_commit_to_release_tag }}
+      already_built: ${{ steps.check.outputs.already_built }}
+      sm_matrix: ${{ steps.matrix.outputs.sm_matrix }}
+      is_backfill: ${{ steps.resolve.outputs.is_backfill }}
+
+    steps:
+      - name: Resolve llama.cpp version
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SOURCE_REPO="${{ github.event.inputs.source_repo || github.event.client_payload.source_repo || 'ggerganov/llama.cpp' }}"
+          SOURCE_BRANCH="${{ github.event.inputs.source_branch || github.event.client_payload.source_branch || '' }}"
+          INPUT_VERSION="${{ github.event.inputs.llama_version || github.event.client_payload.version || 'latest' }}"
+
+          CURL_AUTH=()
+          if [[ -n "${GH_TOKEN:-}" ]]; then
+            CURL_AUTH=(-H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
+          fi
+
+          echo "source_repo=$SOURCE_REPO" >> "$GITHUB_OUTPUT"
+          echo "source_branch=$SOURCE_BRANCH" >> "$GITHUB_OUTPUT"
+
+          # Optional: checkout explicit branch/tag/SHA; otherwise use llama_version / latest
+          if [[ -n "$SOURCE_BRANCH" ]]; then
+            VERSION="$SOURCE_BRANCH"
+          elif [[ "$INPUT_VERSION" == "latest" ]]; then
+            # Prefer latest *GitHub Release* tag; repos with only commits (no releases) fall back to default branch tip SHA
+            if RELEASE_JSON=$(curl -fsSL "${CURL_AUTH[@]}" "https://api.github.com/repos/${SOURCE_REPO}/releases/latest" 2>/dev/null); then
+              VERSION=$(echo "$RELEASE_JSON" | jq -r '.tag_name')
+              if [[ -z "$VERSION" || "$VERSION" == "null" ]]; then
+                VERSION=""
+              fi
+            else
+              VERSION=""
+            fi
+            if [[ -z "$VERSION" ]]; then
+              DEFAULT_REF=$(curl -fsSL "${CURL_AUTH[@]}" "https://api.github.com/repos/${SOURCE_REPO}" | jq -r '.default_branch')
+              VERSION=$(curl -fsSL "${CURL_AUTH[@]}" "https://api.github.com/repos/${SOURCE_REPO}/commits/${DEFAULT_REF}" | jq -r '.sha')
+              echo "No GitHub release found — using default branch ${DEFAULT_REF} @ ${VERSION}"
+            fi
+          else
+            VERSION="$INPUT_VERSION"
+          fi
+
+          echo "Resolved version/ref: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # Exact commit SHA for this ref (used to suffix release tags for latest builds)
+          COMMIT_JSON=$(curl -fsSL "${CURL_AUTH[@]}" "https://api.github.com/repos/${SOURCE_REPO}/commits/${VERSION}")
+          FULL_SHA=$(echo "$COMMIT_JSON" | jq -r '.sha')
+          if [[ -z "$FULL_SHA" || "$FULL_SHA" == "null" ]]; then
+            echo "ERROR: could not resolve commit for ref: ${VERSION} in ${SOURCE_REPO}" >&2
+            exit 1
+          fi
+          SHORT_SHA="${FULL_SHA:0:7}"
+          echo "commit_short=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+
+          if ${{ github.event.inputs.append_commit_to_release_tag != false && github.event.client_payload.append_commit_to_release_tag != false }}; then
+            echo "append_commit_to_release_tag=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "append_commit_to_release_tag=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Release tag distinguishes forks / branches; optional short commit suffix (default on)
+          DEFAULT_REPO="ggerganov/llama.cpp"
+          REPO_SLUG=$(echo "$SOURCE_REPO" | tr '/.' '--' | tr '[:upper:]' '[:lower:]')
+          REF_SLUG=$(echo "$VERSION" | sed 's/[^a-zA-Z0-9._-]/-/g' | tr '[:upper:]' '[:lower:]')
+          if [[ "$SOURCE_REPO" != "$DEFAULT_REPO" || -n "$SOURCE_BRANCH" ]]; then
+            BASE_RELEASE_TAG="${REF_SLUG}__${REPO_SLUG}"
+          else
+            BASE_RELEASE_TAG="$VERSION"
+          fi
+
+          if ${{ github.event.inputs.append_commit_to_release_tag != false && github.event.client_payload.append_commit_to_release_tag != false }}; then
+            if [[ "$VERSION" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              if [[ "$SOURCE_REPO" != "$DEFAULT_REPO" || -n "$SOURCE_BRANCH" ]]; then
+                RELEASE_TAG="commit-${SHORT_SHA}__${REPO_SLUG}"
+              else
+                RELEASE_TAG="commit-${SHORT_SHA}"
+              fi
+            else
+              RELEASE_TAG="${BASE_RELEASE_TAG}-${SHORT_SHA}"
+            fi
+          else
+            RELEASE_TAG="$BASE_RELEASE_TAG"
+          fi
+
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "release_slug=${REPO_SLUG}" >> "$GITHUB_OUTPUT"
+
+          IS_BACKFILL="${{ github.event.inputs.is_backfill || github.event.client_payload.is_backfill || 'false' }}"
+          echo "is_backfill=$IS_BACKFILL" >> "$GITHUB_OUTPUT"
+
+      - name: Check if release already exists
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_TAG="${{ steps.resolve.outputs.release_tag }}"
+          FORCE="${{ github.event.inputs.force_rebuild || github.event.client_payload.force_rebuild || 'false' }}"
+
+          if [[ "$FORCE" == "true" ]]; then
+            echo "force_rebuild=true — skipping already-built check"
+            echo "already_built=false" >> "$GITHUB_OUTPUT"
+          elif gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists. Skipping build."
+            echo "already_built=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release $RELEASE_TAG does not yet exist. Proceeding with build."
+            echo "already_built=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build SM matrix
+        id: matrix
+        run: |
+          SM_INPUT="${{ github.event.inputs.sm_versions || '' }}"
+
+          # Full default matrix
+          #             {"sm":"120", "cuda_image":"12.8.0"},
+
+          ALL_SMS='[
+            {"sm":"120", "cuda_image":"13.2.0"}
+          ]'
+
+          if [[ -z "$SM_INPUT" ]]; then
+            # No filter — use all
+            echo "sm_matrix=$(echo "$ALL_SMS" | jq -c .)" >> "$GITHUB_OUTPUT"
+          else
+            # Filter to only requested SM versions
+            IFS=',' read -ra REQUESTED <<< "$SM_INPUT"
+            FILTER=$(printf '%s\n' "${REQUESTED[@]}" | jq -R . | jq -sc .)
+            FILTERED=$(echo "$ALL_SMS" | jq -c --argjson f "$FILTER" '[.[] | select(.sm as $s | $f | index($s))]')
+            echo "sm_matrix=$FILTERED" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Job 2: build (matrix)
+  # Compiles llama.cpp inside the nvidia/cuda Docker container for each SM.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build SM ${{ matrix.sm }} (CUDA ${{ matrix.cuda_image }})
+    needs: [lint, resolve-version]
+    if: needs.resolve-version.outputs.already_built == 'false'
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.resolve-version.outputs.sm_matrix) }}
+
+    container:
+      image: nvidia/cuda:${{ matrix.cuda_image }}-devel-ubuntu24.04
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout llamaup
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          TZ: Etc/UTC
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            wget gnupg software-properties-common git jq curl ca-certificates \
+            golang-go
+          
+          # Install CMake 3.18+ from Kitware's official repo (Ubuntu 20.04 ships 3.16)
+          #wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | apt-key add -
+          #apt-add-repository 'deb https://apt.kitware.com/ubuntu/ focal main'
+          apt-get update -qq
+          apt-get install -y --no-install-recommends cmake ninja-build  \
+            $(dpkg -l | grep -qw libnccl2 || echo libnccl2) \
+            $(dpkg -l | grep -qw libnccl-dev || echo libnccl-dev)
+
+      - name: Restore llama.cpp source cache
+        id: cache-src
+        uses: actions/cache@v4
+        with:
+          path: /tmp/llamaup-src
+          key: llamaup-src-${{ needs.resolve-version.outputs.release_slug }}-${{ needs.resolve-version.outputs.version }}
+
+      - name: Clone / checkout llama.cpp
+        run: |
+          SOURCE_REPO="${{ needs.resolve-version.outputs.source_repo }}"
+          VERSION="${{ needs.resolve-version.outputs.version }}"
+          SRC_DIR="/tmp/llamaup-src"
+          CLONE_URL="https://github.com/${SOURCE_REPO}.git"
+
+          if [[ -d "${SRC_DIR}/.git" ]]; then
+            CACHED_REMOTE=$(git -C "$SRC_DIR" remote get-url origin 2>/dev/null || true)
+            if [[ "$CACHED_REMOTE" != "$CLONE_URL" ]]; then
+              echo "Cached source is from a different remote — replacing"
+              rm -rf "$SRC_DIR"
+            fi
+          fi
+
+          if [[ -d "${SRC_DIR}/.git" ]]; then
+            echo "Source cached — fetching..."
+            git -C "$SRC_DIR" fetch --tags --quiet
+            git -C "$SRC_DIR" fetch origin --quiet || true
+          else
+            git clone --filter=blob:none --no-checkout --quiet \
+              "$CLONE_URL" "$SRC_DIR"
+          fi
+          # Tags/branches/SHAs: ensure the object exists (bare clones / cache may not have arbitrary commits yet)
+          if ! git -C "$SRC_DIR" rev-parse --verify --quiet "$VERSION^{commit}" >/dev/null; then
+            git -C "$SRC_DIR" fetch origin "$VERSION" 2>/dev/null || git -C "$SRC_DIR" fetch origin
+          fi
+          git -C "$SRC_DIR" checkout --quiet "$VERSION"
+
+      - name: Create libcuda stub symlink
+        run: |
+          # The devel image ships libcuda.so (stub) but not the versioned libcuda.so.1
+          # that the linker requires when building against libggml-cuda. Create it.
+          STUB_DIR="/usr/local/cuda/lib64/stubs"
+          if [[ -f "${STUB_DIR}/libcuda.so" && ! -f "${STUB_DIR}/libcuda.so.1" ]]; then
+            ln -s "${STUB_DIR}/libcuda.so" "${STUB_DIR}/libcuda.so.1"
+          fi
+          echo "${STUB_DIR}" >> /etc/ld.so.conf.d/cuda-stubs.conf
+          ldconfig
+
+      - name: cmake configure
+        run: |
+          # LLAMA_BUILD_BORINGSSL=ON builds BoringSSL from source and bundles Mozilla's
+          # root CA store directly into the binary. This means:
+          #   - No system OpenSSL version requirement (Ubuntu 20.04 has 1.1.1f which is too old)
+          #   - No runtime dependency on system CA certificate paths
+          #   - HTTPS works out of the box on any Linux target machine
+          cmake -S /tmp/llamaup-src \
+                -B /tmp/llamaup-build \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DGGML_CUDA=ON \
+                -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.sm }} \
+                -DCMAKE_INSTALL_PREFIX=/tmp/llamaup-install \
+                -DLLAMA_BUILD_BORINGSSL=ON \
+                -G Ninja
+
+      - name: cmake build
+        run: cmake --build /tmp/llamaup-build --parallel "$(nproc)"
+
+      - name: cmake install
+        run: cmake --install /tmp/llamaup-build
+
+      - name: Detect CUDA toolkit version
+        id: cuda-ver
+        run: |
+          CUDA_VER=$(nvcc --version | grep -oP 'release \K[0-9]+\.[0-9]+')
+          echo "cuda_version=$CUDA_VER" >> "$GITHUB_OUTPUT"
+
+      - name: Package tarball
+        id: package
+        run: |
+          RELEASE_TAG="${{ needs.resolve-version.outputs.release_tag }}"
+          SM="${{ matrix.sm }}"
+          CUDA="${{ steps.cuda-ver.outputs.cuda_version }}"
+          ARCHIVE="llama-${RELEASE_TAG}-linux-cuda${CUDA}-sm${SM}-x64.tar.gz"
+
+          tar -czf "/tmp/${ARCHIVE}" -C /tmp/llamaup-install .
+          sha256sum "/tmp/${ARCHIVE}" | awk '{print $1 "  '"${ARCHIVE}"'"}' > "/tmp/${ARCHIVE}.sha256"
+
+          echo "archive=/tmp/${ARCHIVE}" >> "$GITHUB_OUTPUT"
+          echo "archive_name=${ARCHIVE}"   >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-sm${{ matrix.sm }}
+          path: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.archive }}.sha256
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Job 3: smoke-test (matrix, same SM matrix)
+  # Downloads each artifact and verifies the binary actually runs.
+  # ---------------------------------------------------------------------------
+  smoke-test:
+    name: Smoke test SM ${{ matrix.sm }}
+    needs: [resolve-version, build]
+    if: needs.resolve-version.outputs.already_built == 'false'
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.resolve-version.outputs.sm_matrix) }}
+
+    container:
+      image: nvidia/cuda:${{ matrix.cuda_image }}-devel-ubuntu24.04 # was runtine instead of devel
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-sm${{ matrix.sm }}
+          path: /tmp/artifact
+
+      - name: Extract and run smoke test
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends cmake  \
+            $(dpkg -l | grep -qw libnccl2 || echo libnccl2)
+            
+          mkdir -p /tmp/smoke
+          tar -xzf /tmp/artifact/*.tar.gz -C /tmp/smoke
+
+          # Find llama-cli binary
+          BINARY=$(find /tmp/smoke -name 'llama-cli' -type f | head -n1)
+          if [[ -z "$BINARY" ]]; then
+            echo "ERROR: llama-cli not found in archive" >&2
+            exit 1
+          fi
+
+          chmod +x "$BINARY"
+
+          # Make CUDA stub available in non-GPU CI containers.
+          STUB_DIR="/usr/local/cuda/lib64/stubs"
+          if [[ -f "${STUB_DIR}/libcuda.so" && ! -e "${STUB_DIR}/libcuda.so.1" ]]; then
+            ln -s "${STUB_DIR}/libcuda.so" "${STUB_DIR}/libcuda.so.1"
+          fi
+
+          # Include packaged libs and CUDA libs in the dynamic loader path.
+          export LD_LIBRARY_PATH="/tmp/smoke/lib:/tmp/smoke/lib64:/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib:${STUB_DIR}:${LD_LIBRARY_PATH:-}"
+
+          # Fail fast with a clear dependency report if runtime libs are missing.
+          if ldd "$BINARY" | grep -q "not found"; then
+            echo "ERROR: unresolved shared libraries for $BINARY" >&2
+            ldd "$BINARY" >&2
+            exit 1
+          fi
+
+          # Run --version and verify it produces output.
+          OUTPUT=$("$BINARY" --version 2>&1)
+          if [[ -z "$OUTPUT" ]]; then
+            echo "ERROR: llama-cli --version produced no output" >&2
+            exit 1
+          fi
+
+          echo "Binary version output:"
+          echo "$OUTPUT"
+          echo ""
+
+          # Also verify the binary can show help (another smoke test)
+          if ! "$BINARY" --help >/dev/null 2>&1; then
+            echo "ERROR: llama-cli --help failed" >&2
+            exit 1
+          fi
+
+          # Verify HTTPS support is built in
+          # Try to trigger the -hf flag (which requires HTTPS)
+          # If HTTPS is not supported, it will print the error message
+          HTTPS_TEST=$("$BINARY" -hf --help 2>&1 || true)
+          if echo "$HTTPS_TEST" | grep -q "HTTPS is not supported"; then
+            echo "ERROR: Binary was built without HTTPS support!" >&2
+            echo "This means -DLLAMA_OPENSSL=ON was not effective during build" >&2
+            echo "$BINARY" -hf output: >&2
+            echo "$HTTPS_TEST" >&2
+            exit 1
+          fi
+          echo "✓ HTTPS support verified"
+
+          echo "Smoke test passed: binary runs"
+
+  # ---------------------------------------------------------------------------
+  # Job 4: release
+  # Creates the GitHub Release and uploads all binaries.
+  # Only runs if ALL smoke tests passed.
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish GitHub Release
+    needs: [resolve-version, smoke-test]
+    if: needs.resolve-version.outputs.already_built == 'false'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout llamaup
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binary-sm*
+          path: /tmp/release-assets
+          merge-multiple: true
+
+      - name: Create GitHub Release and upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.resolve-version.outputs.version }}"
+          SOURCE_REPO="${{ needs.resolve-version.outputs.source_repo }}"
+          RELEASE_TAG="${{ needs.resolve-version.outputs.release_tag }}"
+          COMMIT_SHORT="${{ needs.resolve-version.outputs.commit_short }}"
+          APPEND_COMMIT="${{ needs.resolve-version.outputs.append_commit_to_release_tag }}"
+
+          if [[ "$APPEND_COMMIT" == "true" ]]; then
+            REL_TITLE="llama.cpp ${VERSION} (${COMMIT_SHORT}) — ${SOURCE_REPO}"
+          else
+            REL_TITLE="llama.cpp ${VERSION} — ${SOURCE_REPO}"
+          fi
+
+          # Build the release body with the GPU table
+          BODY=$(cat <<EOF
+          ## llama.cpp \`${VERSION}\` — Pre-built CUDA binaries
+
+          | Field | Value |
+          |-------|-------|
+          | **Source repository** | [\`${SOURCE_REPO}\`](https://github.com/${SOURCE_REPO}) |
+          | **Git ref built** | \`${VERSION}\` |
+          | **Commit** | \`${COMMIT_SHORT}\` |
+          | **Release tag (this repo)** | \`${RELEASE_TAG}\` |
+
+          Built by [llamaup](https://github.com/${{ github.repository }}) for all supported SM versions.
+
+          ### Quick install
+
+          \`\`\`bash
+          ./scripts/pull.sh --version ${RELEASE_TAG}
+          \`\`\`
+
+          ### Available builds
+
+          | SM  | Architecture          | CUDA   |
+          |-----|-----------------------|--------|
+          | 75  | Turing                | 12.4   |
+          | 80  | Ampere HPC            | 12.4   |
+          | 86  | Ampere Consumer       | 12.4   |
+          | 89  | Ada Lovelace          | 12.4   |
+          | 90  | Hopper                | 12.4   |
+          | 100 | Blackwell Datacenter  | 12.8   |
+          | 101 | Blackwell Consumer    | 12.8   |
+          | 120 | Blackwell Workstation | 12.8   |
+          | 120 | Blackwell Workstation | 13.2   |
+          EOF
+          )
+
+          # Backfill releases must not steal the "Latest" badge — the newest
+          # version is explicitly promoted via fix-latest.yml after backfill.
+          # Also explicitly set --prerelease=false; without it, --latest=false
+          # causes gh to mark the release as prerelease which blocks promotion.
+          LATEST_FLAG="--latest"
+          PRERELEASE_FLAG="--prerelease=false"
+          if [[ "${{ needs.resolve-version.outputs.is_backfill }}" == "true" ]]; then
+            LATEST_FLAG="--latest=false"
+          fi
+
+          gh release create "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --title "$REL_TITLE" \
+            --notes "$BODY" \
+            $LATEST_FLAG \
+            $PRERELEASE_FLAG \
+            /tmp/release-assets/*.tar.gz \
+            /tmp/release-assets/*.sha256
