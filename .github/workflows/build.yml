@@ -293,6 +293,7 @@ jobs:
 
       - name: Extract and run smoke test
         run: |
+          apt-get update -qq
           apt-get install -y --no-install-recommends cmake  \
             $(dpkg -l | grep -qw libnccl2 || echo libnccl2)
             
