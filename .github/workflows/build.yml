@@ -119,13 +119,6 @@ jobs:
 
           # Full default matrix
           ALL_SMS='[
-           # {"sm":"75",  "cuda_image":"12.4.0"},
-           # {"sm":"80",  "cuda_image":"12.4.0"},
-           # {"sm":"86",  "cuda_image":"12.4.0"},
-           # {"sm":"89",  "cuda_image":"12.4.0"},
-           # {"sm":"90",  "cuda_image":"12.4.0"},
-           # {"sm":"100", "cuda_image":"12.8.0"},
-           # {"sm":"101", "cuda_image":"12.8.0"},
             {"sm":"120", "cuda_image":"12.8.0"},
             {"sm":"120", "cuda_image":"13.2.0"}
           ]'
