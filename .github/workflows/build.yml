@@ -118,8 +118,9 @@ jobs:
           SM_INPUT="${{ github.event.inputs.sm_versions || '' }}"
 
           # Full default matrix
+          #             {"sm":"120", "cuda_image":"12.8.0"},
+
           ALL_SMS='[
-            {"sm":"120", "cuda_image":"12.8.0"},
             {"sm":"120", "cuda_image":"13.2.0"}
           ]'
 
