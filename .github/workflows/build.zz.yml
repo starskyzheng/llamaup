@@ -1,5 +1,12 @@
 name: zz.Build & Release llama.cpp CUDA Binaries
 
+# Shown in the Actions run list (manual + dispatch). Short enough to scan; full table in job summary.
+run-name: >-
+  ${{ github.event.inputs.source_repo || github.event.client_payload.source_repo || 'ggerganov/llama.cpp' }}
+  · ${{ github.event.inputs.source_branch || github.event.client_payload.source_branch || github.event.inputs.llama_version || github.event.client_payload.version || 'latest' }}
+  · CUDA ${{ github.event.inputs.cuda_version || github.event.client_payload.cuda_version || 'preset' }}
+  · SM ${{ github.event.inputs.sm_versions || 'all' }}
+
 # ---------------------------------------------------------------------------
 # Triggers
 # ---------------------------------------------------------------------------
@@ -99,6 +106,24 @@ jobs:
       is_backfill: ${{ steps.resolve.outputs.is_backfill }}
 
     steps:
+      - name: Run parameters (job summary)
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" << EOF
+          ## 运行参数
+
+          | 项 | 值 |
+          |:---|:-----|
+          | **event** | \`${{ github.event_name }}\` |
+          | **source_repo** | \`${{ github.event.inputs.source_repo || github.event.client_payload.source_repo || 'ggerganov/llama.cpp' }}\` |
+          | **source_branch** | \`${{ github.event.inputs.source_branch || github.event.client_payload.source_branch || '—' }}\` |
+          | **llama_version** | \`${{ github.event.inputs.llama_version || github.event.client_payload.version || 'latest' }}\` |
+          | **sm_versions** | \`${{ github.event.inputs.sm_versions || '（空 = 预设矩阵全部 SM）' }}\` |
+          | **cuda_version** | \`${{ github.event.inputs.cuda_version || github.event.client_payload.cuda_version || '（空 = 预设矩阵全部 CUDA）' }}\` |
+          | **force_rebuild** | \`${{ github.event.inputs.force_rebuild || github.event.client_payload.force_rebuild || false }}\` |
+          | **is_backfill** | \`${{ github.event.inputs.is_backfill || github.event.client_payload.is_backfill || false }}\` |
+          | **append_commit_to_release_tag** | \`${{ github.event.inputs.append_commit_to_release_tag != false && github.event.client_payload.append_commit_to_release_tag != false }}\` |
+          EOF
+
       - name: Resolve llama.cpp version
         id: resolve
         env:
