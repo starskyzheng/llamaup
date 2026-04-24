@@ -365,6 +365,8 @@ jobs:
                 -B /tmp/llamaup-build \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DGGML_CUDA=ON \
+                -DGGML_AVX_VNNI=ON \
+                -DGGML_AVX2=on \
                 -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.sm }} \
                 -DCMAKE_INSTALL_PREFIX=/tmp/llamaup-install \
                 -DLLAMA_BUILD_BORINGSSL=ON \
