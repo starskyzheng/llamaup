@@ -24,11 +24,11 @@ on:
       sm_versions:
         description: 'Comma-separated SM versions to build (e.g. "89,90"). Leave blank for all.'
         required: false
-        default: ''
+        default: '120'
       cuda_version:
         description: 'nvidia/cuda Docker image tag (e.g. 13.2.0, 12.8.0). Leave blank to use each matrix row default cuda_image.'
         required: false
-        default: ''
+        default: '13.2.0'
       force_rebuild:
         description: 'Rebuild even if a release for this version already exists'
         required: false
@@ -213,6 +213,8 @@ jobs:
 
           ALL_SMS='[
             {"sm":"120", "cuda_image":"12.8.0"},
+            {"sm":"120", "cuda_image":"12.9.1"},
+            {"sm":"120", "cuda_image":"13.1.1"},
             {"sm":"120", "cuda_image":"13.2.0"}
           ]'
 
