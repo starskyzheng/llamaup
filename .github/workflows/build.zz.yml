@@ -26,9 +26,9 @@ on:
         required: false
         default: '120'
       cuda_version:
-        description: 'nvidia/cuda Docker tag (e.g. 13.2.0). Blank = build every preset (sm, cuda) row. If set, all rows use this image and duplicate (same sm+cuda) matrix entries collapse to one job.'
+        description: 'nvidia/cuda Docker tag (e.g. 13.1.1). Blank = build every preset (sm, cuda) row. If set, all rows use this image and duplicate (same sm+cuda) matrix entries collapse to one job.'
         required: false
-        default: '13.2.0'
+        default: '13.1.1'
       force_rebuild:
         description: 'Rebuild even if a release for this version already exists'
         required: false
@@ -94,8 +94,8 @@ jobs:
       release_slug: ${{ steps.resolve.outputs.release_slug }}
       commit_short: ${{ steps.resolve.outputs.commit_short }}
       append_commit_to_release_tag: ${{ steps.resolve.outputs.append_commit_to_release_tag }}
-      already_built: ${{ steps.check.outputs.already_built }}
       sm_matrix: ${{ steps.matrix.outputs.sm_matrix }}
+      matrix_leg_count: ${{ steps.matrix.outputs.matrix_leg_count }}
       is_backfill: ${{ steps.resolve.outputs.is_backfill }}
 
     steps:
@@ -183,25 +183,6 @@ jobs:
           IS_BACKFILL="${{ github.event.inputs.is_backfill || github.event.client_payload.is_backfill || 'false' }}"
           echo "is_backfill=$IS_BACKFILL" >> "$GITHUB_OUTPUT"
 
-      - name: Check if release already exists
-        id: check
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          RELEASE_TAG="${{ steps.resolve.outputs.release_tag }}"
-          FORCE="${{ github.event.inputs.force_rebuild || github.event.client_payload.force_rebuild || 'false' }}"
-
-          if [[ "$FORCE" == "true" ]]; then
-            echo "force_rebuild=true — skipping already-built check"
-            echo "already_built=false" >> "$GITHUB_OUTPUT"
-          elif gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "Release $RELEASE_TAG already exists. Skipping build."
-            echo "already_built=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Release $RELEASE_TAG does not yet exist. Proceeding with build."
-            echo "already_built=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Build SM matrix
         id: matrix
         run: |
@@ -228,14 +209,16 @@ jobs:
 
           if [[ -z "$SM_INPUT" ]]; then
             # No filter — use all
-            echo "sm_matrix=$(echo "$ALL_SMS" | jq -c .)" >> "$GITHUB_OUTPUT"
+            FINAL=$(echo "$ALL_SMS" | jq -c .)
+            echo "sm_matrix=$FINAL" >> "$GITHUB_OUTPUT"
           else
             # Filter to only requested SM versions
             IFS=',' read -ra REQUESTED <<< "$SM_INPUT"
             FILTER=$(printf '%s\n' "${REQUESTED[@]}" | jq -R . | jq -sc .)
-            FILTERED=$(echo "$ALL_SMS" | jq -c --argjson f "$FILTER" '[.[] | select(.sm as $s | $f | index($s))]')
-            echo "sm_matrix=$FILTERED" >> "$GITHUB_OUTPUT"
+            FINAL=$(echo "$ALL_SMS" | jq -c --argjson f "$FILTER" '[.[] | select(.sm as $s | $f | index($s))]')
+            echo "sm_matrix=$FINAL" >> "$GITHUB_OUTPUT"
           fi
+          echo "matrix_leg_count=$(echo "$FINAL" | jq 'length')" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------
   # Job 2: build (matrix)
@@ -244,7 +227,6 @@ jobs:
   build:
     name: Build SM ${{ matrix.sm }} (CUDA ${{ matrix.cuda_image }})
     needs: [lint, resolve-version]
-    if: needs.resolve-version.outputs.already_built == 'false'
     runs-on: ubuntu-latest
 
     strategy:
@@ -260,6 +242,15 @@ jobs:
         shell: bash
 
     steps:
+      - name: Per-matrix release tag
+        id: leg
+        run: |
+          BASE="${{ needs.resolve-version.outputs.release_tag }}"
+          CUD="${{ matrix.cuda_image }}"
+          SM="${{ matrix.sm }}"
+          CUDF="${CUD//./}"
+          echo "release_tag=${BASE}-cuda${CUDF}-sm${SM}" >> "$GITHUB_OUTPUT"
+
       - name: Checkout llamaup
         uses: actions/checkout@v4
 
@@ -358,7 +349,7 @@ jobs:
       - name: Package tarball
         id: package
         run: |
-          RELEASE_TAG="${{ needs.resolve-version.outputs.release_tag }}"
+          RELEASE_TAG="${{ steps.leg.outputs.release_tag }}"
           SM="${{ matrix.sm }}"
           CUDA="${{ steps.cuda-ver.outputs.cuda_version }}"
           ARCHIVE="llama-${RELEASE_TAG}-linux-cuda${CUDA}-sm${SM}-x64.tar.gz"
@@ -372,7 +363,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: binary-sm${{ matrix.sm }}
+          name: binary-sm${{ matrix.sm }}-cuda${{ matrix.cuda_image }}
           path: |
             ${{ steps.package.outputs.archive }}
             ${{ steps.package.outputs.archive }}.sha256
@@ -383,9 +374,8 @@ jobs:
   # Downloads each artifact and verifies the binary actually runs.
   # ---------------------------------------------------------------------------
   smoke-test:
-    name: Smoke test SM ${{ matrix.sm }}
+    name: Smoke test SM ${{ matrix.sm }} (CUDA ${{ matrix.cuda_image }})
     needs: [resolve-version, build]
-    if: needs.resolve-version.outputs.already_built == 'false'
     runs-on: ubuntu-latest
 
     strategy:
@@ -404,7 +394,7 @@ jobs:
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: binary-sm${{ matrix.sm }}
+          name: binary-sm${{ matrix.sm }}-cuda${{ matrix.cuda_image }}
           path: /tmp/artifact
 
       - name: Extract and run smoke test
@@ -473,26 +463,37 @@ jobs:
           echo "Smoke test passed: binary runs"
 
   # ---------------------------------------------------------------------------
-  # Job 4: release
-  # Creates the GitHub Release and uploads all binaries.
-  # Only runs if ALL smoke tests passed.
+  # Job 4: release (matrix)
+  # One GitHub Release per matrix leg: single tarball + checksum for that CUDA/SM.
   # ---------------------------------------------------------------------------
   release:
-    name: Publish GitHub Release
+    name: Publish release CUDA ${{ matrix.cuda_image }} SM ${{ matrix.sm }}
     needs: [resolve-version, smoke-test]
-    if: needs.resolve-version.outputs.already_built == 'false'
     runs-on: ubuntu-latest
 
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.resolve-version.outputs.sm_matrix) }}
+
     steps:
+      - name: Per-matrix release tag
+        id: leg
+        run: |
+          BASE="${{ needs.resolve-version.outputs.release_tag }}"
+          CUD="${{ matrix.cuda_image }}"
+          SM="${{ matrix.sm }}"
+          CUDF="${CUD//./}"
+          echo "release_tag=${BASE}-cuda${CUDF}-sm${SM}" >> "$GITHUB_OUTPUT"
+
       - name: Checkout llamaup
         uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Download this matrix artifact
         uses: actions/download-artifact@v4
         with:
-          pattern: binary-sm*
+          name: binary-sm${{ matrix.sm }}-cuda${{ matrix.cuda_image }}
           path: /tmp/release-assets
-          merge-multiple: true
 
       - name: Create GitHub Release and upload assets
         env:
@@ -500,59 +501,56 @@ jobs:
         run: |
           VERSION="${{ needs.resolve-version.outputs.version }}"
           SOURCE_REPO="${{ needs.resolve-version.outputs.source_repo }}"
-          RELEASE_TAG="${{ needs.resolve-version.outputs.release_tag }}"
+          RELEASE_TAG="${{ steps.leg.outputs.release_tag }}"
           COMMIT_SHORT="${{ needs.resolve-version.outputs.commit_short }}"
           APPEND_COMMIT="${{ needs.resolve-version.outputs.append_commit_to_release_tag }}"
+          MATRIX_LEGS="${{ needs.resolve-version.outputs.matrix_leg_count }}"
+          CUDA_IMG="${{ matrix.cuda_image }}"
+          SM="${{ matrix.sm }}"
+          FORCE="${{ github.event.inputs.force_rebuild || github.event.client_payload.force_rebuild || 'false' }}"
 
           if [[ "$APPEND_COMMIT" == "true" ]]; then
-            REL_TITLE="llama.cpp ${VERSION} (${COMMIT_SHORT}) — ${SOURCE_REPO}"
+            REL_TITLE="llama.cpp ${VERSION} (${COMMIT_SHORT}) — ${SOURCE_REPO} — CUDA ${CUDA_IMG} sm${SM}"
           else
-            REL_TITLE="llama.cpp ${VERSION} — ${SOURCE_REPO}"
+            REL_TITLE="llama.cpp ${VERSION} — ${SOURCE_REPO} — CUDA ${CUDA_IMG} sm${SM}"
           fi
 
-          # Build the release body with the GPU table
           BODY=$(cat <<EOF
-          ## llama.cpp \`${VERSION}\` — Pre-built CUDA binaries
+          ## llama.cpp \`${VERSION}\` — CUDA ${CUDA_IMG} / SM ${SM}
 
           | Field | Value |
           |-------|-------|
           | **Source repository** | [\`${SOURCE_REPO}\`](https://github.com/${SOURCE_REPO}) |
           | **Git ref built** | \`${VERSION}\` |
           | **Commit** | \`${COMMIT_SHORT}\` |
+          | **CUDA image (build)** | \`${CUDA_IMG}\` |
+          | **SM** | \`${SM}\` |
           | **Release tag (this repo)** | \`${RELEASE_TAG}\` |
 
-          Built by [llamaup](https://github.com/${{ github.repository }}) for all supported SM versions.
+          This release contains **one** pre-built binary archive (and \`.sha256\`) for the CUDA toolkit / SM above.
 
           ### Quick install
 
           \`\`\`bash
           ./scripts/pull.sh --version ${RELEASE_TAG}
           \`\`\`
-
-          ### Available builds
-
-          | SM  | Architecture          | CUDA   |
-          |-----|-----------------------|--------|
-          | 75  | Turing                | 12.4   |
-          | 80  | Ampere HPC            | 12.4   |
-          | 86  | Ampere Consumer       | 12.4   |
-          | 89  | Ada Lovelace          | 12.4   |
-          | 90  | Hopper                | 12.4   |
-          | 100 | Blackwell Datacenter  | 12.8   |
-          | 101 | Blackwell Consumer    | 12.8   |
-          | 120 | Blackwell Workstation | 12.8   |
-          | 120 | Blackwell Workstation | 13.2   |
           EOF
           )
 
-          # Backfill releases must not steal the "Latest" badge — the newest
-          # version is explicitly promoted via fix-latest.yml after backfill.
-          # Also explicitly set --prerelease=false; without it, --latest=false
-          # causes gh to mark the release as prerelease which blocks promotion.
-          LATEST_FLAG="--latest"
+          # Multiple matrix legs: avoid fighting over the repo "Latest" badge unless only one leg exists.
+          LATEST_FLAG="--latest=false"
           PRERELEASE_FLAG="--prerelease=false"
-          if [[ "${{ needs.resolve-version.outputs.is_backfill }}" == "true" ]]; then
-            LATEST_FLAG="--latest=false"
+          if [[ "${{ needs.resolve-version.outputs.is_backfill }}" != "true" && "$MATRIX_LEGS" == "1" ]]; then
+            LATEST_FLAG="--latest"
+          fi
+
+          if [[ "$FORCE" == "true" ]] && gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release delete "$RELEASE_TAG" --repo "${{ github.repository }}" --yes
+          fi
+
+          if gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists — skipping (use force_rebuild to replace)."
+            exit 0
           fi
 
           gh release create "$RELEASE_TAG" \
