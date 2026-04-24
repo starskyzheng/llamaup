@@ -435,12 +435,12 @@ jobs:
 
       - name: Extract and run smoke test
         run: |
-          apt-get update -qq
-          #apt-get install -y --no-install-recommends --no-upgrade libnccl2
-
+          # apt-get update -qq
+          # apt-get install -y --no-install-recommends --no-upgrade libnccl2
+          echo "Start"
           mkdir -p /tmp/smoke
           tar -xzf /tmp/artifact/*.tar.gz -C /tmp/smoke
-
+          echo "test smoke"
           # Find llama-cli binary
           BINARY=$(find /tmp/smoke -name 'llama-cli' -type f | head -n1)
           if [[ -z "$BINARY" ]]; then
@@ -449,7 +449,8 @@ jobs:
           fi
 
           chmod +x "$BINARY"
-
+          
+          echo "link libcuda.so"
           # Make CUDA stub available in non-GPU CI containers.
           STUB_DIR="/usr/local/cuda/lib64/stubs"
           if [[ -f "${STUB_DIR}/libcuda.so" && ! -e "${STUB_DIR}/libcuda.so.1" ]]; then
@@ -459,6 +460,7 @@ jobs:
           # Include packaged libs and CUDA libs in the dynamic loader path.
           export LD_LIBRARY_PATH="/tmp/smoke/lib:/tmp/smoke/lib64:/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib:${STUB_DIR}:${LD_LIBRARY_PATH:-}"
 
+          echo "test BINARY ldd"
           # Fail fast with a clear dependency report if runtime libs are missing.
           if ldd "$BINARY" | grep -q "not found"; then
             echo "ERROR: unresolved shared libraries for $BINARY" >&2
@@ -466,6 +468,7 @@ jobs:
             exit 1
           fi
 
+          echo "test BINARY"
           # Run --version and verify it produces output.
           OUTPUT=$("$BINARY" --version 2>&1)
           if [[ -z "$OUTPUT" ]]; then
