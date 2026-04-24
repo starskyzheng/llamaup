@@ -22,13 +22,13 @@ on:
         required: false
         default: 'latest'
       sm_versions:
-        description: 'Comma-separated SM versions to build (e.g. "89,90"). Leave blank for all.'
+        description: 'Comma-separated SM (e.g. 89,90). Blank = every SM that appears in the preset matrix.'
         required: false
-        default: '120'
+        default: ''
       cuda_version:
-        description: 'nvidia/cuda Docker image tag (e.g. 13.2.0, 12.8.0). Leave blank to use each matrix row default cuda_image.'
+        description: 'nvidia/cuda Docker tag (e.g. 13.2.0). Blank = build every preset (sm, cuda) row. If set, all rows use this image and duplicate (same sm+cuda) matrix entries collapse to one job.'
         required: false
-        default: '13.2.0'
+        default: ''
       force_rebuild:
         description: 'Rebuild even if a release for this version already exists'
         required: false
@@ -55,10 +55,10 @@ on:
 permissions:
   contents: write
 
-# One run per (source repo, ref, version rule); duplicate triggers for the same
-# release tag are skipped via already_built so dispatches never produce duplicate releases.
+# Queue per source + ref + CUDA/SM choice so different manual options are not merged into one lock;
+# duplicate releases for the same tag are still skipped via already_built.
 concurrency:
-  group: build-${{ github.event.inputs.source_repo || github.event.client_payload.source_repo || 'ggerganov/llama.cpp' }}-${{ github.event.inputs.source_branch || github.event.client_payload.source_branch || '' }}-${{ github.event.inputs.llama_version || github.event.client_payload.version || 'latest' }}
+  group: build-${{ github.event.inputs.source_repo || github.event.client_payload.source_repo || 'ggerganov/llama.cpp' }}-${{ github.event.inputs.source_branch || github.event.client_payload.source_branch || '' }}-${{ github.event.inputs.llama_version || github.event.client_payload.version || 'latest' }}-${{ github.event.inputs.cuda_version || github.event.client_payload.cuda_version || 'matrix' }}-${{ github.event.inputs.sm_versions || 'all' }}
   cancel-in-progress: false   # queue, don't cancel — let each version finish
 
 # ---------------------------------------------------------------------------
@@ -219,7 +219,11 @@ jobs:
           ]'
 
           if [[ -n "$CUDA_INPUT" ]]; then
-            ALL_SMS=$(echo "$ALL_SMS" | jq -c --arg c "$CUDA_INPUT" '[.[] | .cuda_image = $c]')
+            # Preset matrix often repeats the same SM with different cuda_image; forcing one CUDA
+            # must not spawn duplicate identical matrix legs.
+            ALL_SMS=$(echo "$ALL_SMS" | jq -c --arg c "$CUDA_INPUT" '
+              [.[] | .cuda_image = $c] | unique_by("\(.sm)|\(.cuda_image)")
+            ')
           fi
 
           if [[ -z "$SM_INPUT" ]]; then
