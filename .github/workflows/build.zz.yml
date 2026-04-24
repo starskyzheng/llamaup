@@ -26,7 +26,7 @@ on:
         required: false
         default: '120'
       cuda_version:
-        description: 'nvidia/cuda Docker tag (e.g. 13.1.1). Blank = build every preset (sm, cuda) row. If set, all rows use this image and duplicate (same sm+cuda) matrix entries collapse to one job.'
+        description: 'nvidia/cuda Docker tag(s). One: 13.1.1. Multiple (comma-separated): 13.1.1,13.2.0 — builds one matrix leg per SM × each CUDA. Blank = every preset (sm, cuda) row.'
         required: false
         default: '13.1.1'
       force_rebuild:
@@ -45,7 +45,7 @@ on:
         default: true
         type: boolean
 
-  # client_payload may include: version, source_repo, source_branch, is_backfill, force_rebuild, append_commit_to_release_tag, cuda_version
+  # client_payload may include: version, source_repo, source_branch, is_backfill, force_rebuild, append_commit_to_release_tag, cuda_version (comma-separated for multiple)
   repository_dispatch:
     types: [new-llama-release]    # external webhook trigger
 
@@ -200,11 +200,21 @@ jobs:
           ]'
 
           if [[ -n "$CUDA_INPUT" ]]; then
-            # Preset matrix often repeats the same SM with different cuda_image; forcing one CUDA
-            # must not spawn duplicate identical matrix legs.
-            ALL_SMS=$(echo "$ALL_SMS" | jq -c --arg c "$CUDA_INPUT" '
-              [.[] | .cuda_image = $c] | unique_by("\(.sm)|\(.cuda_image)")
-            ')
+            CUDA_STRIPPED=$(echo "$CUDA_INPUT" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            if [[ "$CUDA_STRIPPED" == *","* ]]; then
+              # Multiple Docker tags: Cartesian product (unique SMs from preset) × each CUDA
+              CUDAS_JSON=$(echo "$CUDA_STRIPPED" | jq -R 'split(",") | map(gsub("^\\s+|\\s+$";"")) | map(select(length > 0))')
+              UNIQ_SM=$(echo "$ALL_SMS" | jq -c '[.[].sm] | unique')
+              ALL_SMS=$(jq -n --argjson sms "$UNIQ_SM" --argjson cudas "$CUDAS_JSON" '
+                [$sms[] as $s | $cudas[] as $c | {sm: ($s | tostring), cuda_image: $c}]
+                | unique_by("\(.sm)|\(.cuda_image)")
+              ')
+            else
+              # Single tag: force every preset row to this image, collapse duplicate (sm, cuda)
+              ALL_SMS=$(echo "$ALL_SMS" | jq -c --arg c "$CUDA_STRIPPED" '
+                [.[] | .cuda_image = $c] | unique_by("\(.sm)|\(.cuda_image)")
+              ')
+            fi
           fi
 
           if [[ -z "$SM_INPUT" ]]; then
@@ -214,7 +224,7 @@ jobs:
           else
             # Filter to only requested SM versions
             IFS=',' read -ra REQUESTED <<< "$SM_INPUT"
-            FILTER=$(printf '%s\n' "${REQUESTED[@]}" | jq -R . | jq -sc .)
+            FILTER=$(printf '%s\n' "${REQUESTED[@]}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | jq -R . | jq -sc .)
             FINAL=$(echo "$ALL_SMS" | jq -c --argjson f "$FILTER" '[.[] | select(.sm as $s | $f | index($s))]')
             echo "sm_matrix=$FINAL" >> "$GITHUB_OUTPUT"
           fi
