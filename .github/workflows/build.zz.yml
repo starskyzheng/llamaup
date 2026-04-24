@@ -271,7 +271,7 @@ jobs:
         include: ${{ fromJson(needs.resolve-version.outputs.sm_matrix) }}
 
     container:
-      image: nvidia/cuda:${{ matrix.cuda_image }}-devel-ubuntu24.04
+      image: nvidia/cuda:${{ matrix.cuda_image }}-cudnn-devel-ubuntu24.04
 
     defaults:
       run:
@@ -305,7 +305,7 @@ jobs:
           #apt-add-repository 'deb https://apt.kitware.com/ubuntu/ focal main'
           apt-get update -qq
           apt-get install -y --no-install-recommends cmake ninja-build
-          apt-get install -y --no-install-recommends --no-upgrade libnccl-dev libnccl2
+          #apt-get install -y --no-install-recommends --no-upgrade libnccl-dev libnccl2
 
       - name: Restore llama.cpp source cache
         id: cache-src
@@ -420,7 +420,7 @@ jobs:
         include: ${{ fromJson(needs.resolve-version.outputs.sm_matrix) }}
 
     container:
-      image: nvidia/cuda:${{ matrix.cuda_image }}-devel-ubuntu24.04 # was runtine instead of devel
+      image: nvidia/cuda:${{ matrix.cuda_image }}-cudnn-devel-ubuntu24.04 # was runtine instead of devel
 
     defaults:
       run:
@@ -436,7 +436,7 @@ jobs:
       - name: Extract and run smoke test
         run: |
           apt-get update -qq
-          apt-get install -y --no-install-recommends --no-upgrade libnccl2
+          #apt-get install -y --no-install-recommends --no-upgrade libnccl2
 
           mkdir -p /tmp/smoke
           tar -xzf /tmp/artifact/*.tar.gz -C /tmp/smoke
