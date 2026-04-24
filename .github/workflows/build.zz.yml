@@ -220,6 +220,7 @@ jobs:
           ALL_SMS='[
             {"sm":"120", "cuda_image":"12.8.0"},
             {"sm":"120", "cuda_image":"12.9.1"},
+            {"sm":"120", "cuda_image":"13.1.0"},
             {"sm":"120", "cuda_image":"13.1.1"},
             {"sm":"120", "cuda_image":"13.2.0"}
           ]'
