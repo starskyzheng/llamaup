@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       source_repo:
-        description: 'Upstream repo to build (owner/name, e.g. ggerganov/llama.cpp , TheTom/llama-cpp-turboquant)'
+        description: 'Upstream repo to build (owner/name, e.g. ggerganov/llama.cpp , TheTom/llama-cpp-turboquant , ikawrakow/ik_llama.cpp)'
         required: false
         default: 'ggerganov/llama.cpp'
       source_branch:
