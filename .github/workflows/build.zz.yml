@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       source_repo:
-        description: 'Upstream repo to build (owner/name, e.g. ggml-org/llama.cpp , TheTom/llama-cpp-turboquant , ikawrakow/ik_llama.cpp)'
+        description: 'Upstream repo to build (owner/name, e.g. ggml-org/llama.cpp , TheTom/llama-cpp-turboquant , ikawrakow/ik_llama.cpp , spiritbuun/buun-llama-cpp)'
         required: false
         default: 'ggml-org/llama.cpp'
       source_branch:
@@ -366,6 +366,8 @@ jobs:
                 -B /tmp/llamaup-build \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DGGML_CUDA=ON \
+                -DGGML_CUDA_FA=ON \
+                -DGGML_CUDA_FA_ALL_QUANTS=ON \
                 -DGGML_NATIVE=OFF \
                 -DGGML_AVX_VNNI=ON \
                 -DGGML_AVX=ON \
