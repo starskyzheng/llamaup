@@ -4,8 +4,8 @@ name: Build & Release llama.cpp CUDA Binaries
 # Triggers
 # ---------------------------------------------------------------------------
 on:
-  schedule:
-    - cron: '0 4 * * *'          # daily at 04:00 UTC
+  #schedule:
+  #  - cron: '0 4 * * *'          # daily at 04:00 UTC
 
   workflow_dispatch:
     inputs:
