@@ -17,11 +17,11 @@ on:
   workflow_dispatch:
     inputs:
       source_repo:
-        description: 'Upstream repo to build (owner/name, e.g. ggml-org/llama.cpp , TheTom/llama-cpp-turboquant , ikawrakow/ik_llama.cpp , spiritbuun/buun-llama-cpp)'
+        description: 'Upstream repo to build (owner/name, e.g. ggml-org/llama.cpp , TheTom/llama-cpp-turboquant , ikawrakow/ik_llama.cpp , spiritbuun/buun-llama-cpp , johndpope/llama-cpp-turboquant)'
         required: false
         default: 'ggml-org/llama.cpp'
       source_branch:
-        description: 'Branch name, tag, or full commit SHA to checkout. Leave blank to use llama_version instead. e.g. feature/turboquant-kv-cache'
+        description: 'Branch name, tag, or full commit SHA to checkout. Leave blank to use llama_version instead. e.g. feature/turboquant-kv-cache (TheTom) , feature/planarquant-kv-cache (johndpope)'
         required: false
         default: ''
       llama_version:
