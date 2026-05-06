@@ -29,11 +29,11 @@ on:
         required: false
         default: 'latest'
       sm_versions:
-        description: 'Comma-separated SM (e.g. 89,90). Blank = every SM that appears in the preset matrix.'
+        description: 'Comma-separated SM (e.g. 75,120). Blank = every SM that appears in the preset matrix.'
         required: false
         default: '120'
       cuda_version:
-        description: 'nvidia/cuda Docker tag(s). One: 13.1.1. Multiple (comma-separated): 13.1.1,13.2.0 — builds one matrix leg per SM × each CUDA. Blank = every preset (sm, cuda) row.'
+        description: 'nvidia/cuda Docker tag(s). One: 13.1.1. Multiple (comma-separated): 13.0.3,13.1.1,13.2.0 — builds one matrix leg per SM × each CUDA. Blank = every preset (sm, cuda) row.'
         required: false
         default: '13.1.1'
       force_rebuild:
@@ -220,6 +220,7 @@ jobs:
           ALL_SMS='[
             {"sm":"120", "cuda_image":"12.8.0"},
             {"sm":"120", "cuda_image":"12.9.1"},
+            {"sm":"75", "cuda_image":"13.0.0"},
             {"sm":"120", "cuda_image":"13.1.0"},
             {"sm":"120", "cuda_image":"13.1.1"},
             {"sm":"120", "cuda_image":"13.2.0"}
