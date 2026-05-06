@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       source_repo:
-        description: 'Upstream repo to build (owner/name, e.g. ggml-org/llama.cpp , TheTom/llama-cpp-turboquant , ikawrakow/ik_llama.cpp , spiritbuun/buun-llama-cpp , johndpope/llama-cpp-turboquant)'
+        description: 'Upstream repo to build (owner/name, e.g. ggml-org/llama.cpp , TheTom/llama-cpp-turboquant , ikawrakow/ik_llama.cpp , spiritbuun/buun-llama-cpp , ApTwoTone/llama-cpp-turboquant (johndpope) )'
         required: false
         default: 'ggml-org/llama.cpp'
       source_branch:
