@@ -247,14 +247,18 @@ jobs:
           if [[ -z "$SM_INPUT" ]]; then
             # No filter — use all
             FINAL=$(echo "$ALL_SMS" | jq -c .)
-            echo "sm_matrix=$FINAL" >> "$GITHUB_OUTPUT"
           else
             # Filter to only requested SM versions
             IFS=',' read -ra REQUESTED <<< "$SM_INPUT"
             FILTER=$(printf '%s\n' "${REQUESTED[@]}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | jq -R . | jq -sc .)
             FINAL=$(echo "$ALL_SMS" | jq -c --argjson f "$FILTER" '[.[] | select(.sm as $s | $f | index($s))]')
-            echo "sm_matrix=$FINAL" >> "$GITHUB_OUTPUT"
           fi
+
+          # CUDA < 13: nvidia/cuda uses *-devel-ubuntu24.04 (no cuDNN devel tag on Docker Hub for many 12.x tags).
+          # CUDA >= 13: use *-cudnn-devel-ubuntu24.04.
+          FINAL=$(echo "$FINAL" | jq -c 'map(. + {cuda_docker_variant: ((.cuda_image | split(".")[0] | tonumber) as $maj | if $maj < 13 then "devel" else "cudnn-devel" end)})')
+
+          echo "sm_matrix=$FINAL" >> "$GITHUB_OUTPUT"
           echo "matrix_leg_count=$(echo "$FINAL" | jq 'length')" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------
@@ -272,7 +276,7 @@ jobs:
         include: ${{ fromJson(needs.resolve-version.outputs.sm_matrix) }}
 
     container:
-      image: nvidia/cuda:${{ matrix.cuda_image }}-cudnn-devel-ubuntu24.04
+      image: nvidia/cuda:${{ matrix.cuda_image }}-${{ matrix.cuda_docker_variant }}-ubuntu24.04
 
     defaults:
       run:
@@ -432,7 +436,7 @@ jobs:
         include: ${{ fromJson(needs.resolve-version.outputs.sm_matrix) }}
 
     container:
-      image: nvidia/cuda:${{ matrix.cuda_image }}-cudnn-devel-ubuntu24.04 # was runtine instead of devel
+      image: nvidia/cuda:${{ matrix.cuda_image }}-${{ matrix.cuda_docker_variant }}-ubuntu24.04
 
     defaults:
       run:
