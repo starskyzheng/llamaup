@@ -29,11 +29,11 @@ on:
         required: false
         default: 'latest'
       sm_versions:
-        description: 'Comma-separated SM (e.g. 61,120). Blank = every SM that appears in the preset matrix.'
+        description: 'Comma-separated SM (e.g. 61,120). Blank = every SM that appears in the preset matrix. If an SM is not in the preset, you must also set cuda_version (both required for custom SM×CUDA legs).'
         required: false
         default: '120'
       cuda_version:
-        description: 'nvidia/cuda Docker tag(s). One: 13.1.1. Multiple (comma-separated): 12.8.2,13.1.1,13.2.0 — builds one matrix leg per SM × each CUDA. Blank = every preset (sm, cuda) row.'
+        description: 'nvidia/cuda Docker tag(s). One: 13.1.1. Multiple (comma-separated): 12.8.2,13.1.1,13.2.0 — builds one matrix leg per SM × each CUDA. Blank = every preset (sm, cuda) row. Required together with sm_versions when using an SM not listed in the preset.'
         required: false
         default: '13.1.1'
       force_rebuild:
@@ -247,11 +247,32 @@ jobs:
           if [[ -z "$SM_INPUT" ]]; then
             # No filter — use all
             FINAL=$(echo "$ALL_SMS" | jq -c .)
-          else
-            # Filter to only requested SM versions
+          elif [[ -z "$CUDA_INPUT" ]]; then
+            # Filter preset rows by SM only (cuda_version blank = preset CUDA columns)
             IFS=',' read -ra REQUESTED <<< "$SM_INPUT"
             FILTER=$(printf '%s\n' "${REQUESTED[@]}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | jq -R . | jq -sc .)
             FINAL=$(echo "$ALL_SMS" | jq -c --argjson f "$FILTER" '[.[] | select(.sm as $s | $f | index($s))]')
+            if [[ "$(echo "$FINAL" | jq 'length')" -eq 0 ]]; then
+              echo "::error::Requested SM(s) are not in the preset matrix. Set **cuda_version** together with **sm_versions** to use a custom SM/CUDA pair."
+              exit 1
+            fi
+          else
+            # Both SM and CUDA are set: for each (sm, cuda) pair, use a matching preset row if present,
+            # otherwise keep the explicitly requested pair (custom combo not in ALL_SMS).
+            IFS=',' read -ra REQUESTED <<< "$SM_INPUT"
+            FILTER=$(printf '%s\n' "${REQUESTED[@]}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | jq -R . | jq -sc .)
+            CUDA_STRIPPED=$(echo "$CUDA_INPUT" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            if [[ "$CUDA_STRIPPED" == *","* ]]; then
+              CUDAS_JSON=$(echo "$CUDA_STRIPPED" | jq -R 'split(",") | map(gsub("^\\s+|\\s+$";"")) | map(select(length > 0))')
+            else
+              CUDAS_JSON=$(jq -n --arg c "$CUDA_STRIPPED" '[$c]')
+            fi
+            FINAL=$(jq -n --argjson preset "$ALL_SMS" --argjson sms "$FILTER" --argjson cudas "$CUDAS_JSON" '
+              [$sms[] as $s | $cudas[] as $c | {sm: ($s | tostring), cuda_image: $c}] as $pairs
+              | $pairs
+              | map(. as $p | ($preset | map(select(.sm == $p.sm and .cuda_image == $p.cuda_image)) | .[0]) // $p)
+              | unique_by("\(.sm)|\(.cuda_image)")
+            ')
           fi
 
           # CUDA < 13: nvidia/cuda uses *-devel-ubuntu24.04 (no cuDNN devel tag on Docker Hub for many 12.x tags).
