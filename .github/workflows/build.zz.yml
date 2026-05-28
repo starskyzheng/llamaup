@@ -33,9 +33,9 @@ on:
         required: false
         default: '120'
       cuda_version:
-        description: 'nvidia/cuda Docker tag(s). One: 13.1.1. Multiple (comma-separated): 12.8.2,13.1.1,13.2.0 — builds one matrix leg per SM × each CUDA. Blank = every preset (sm, cuda) row. Required together with sm_versions when using an SM not listed in the preset.'
+        description: 'nvidia/cuda Docker tag(s). One: 13.3.0. Multiple (comma-separated): 12.8.2,13.1.1,13.2.0 — builds one matrix leg per SM × each CUDA. Blank = every preset (sm, cuda) row. Required together with sm_versions when using an SM not listed in the preset.'
         required: false
-        default: '13.1.1'
+        default: '13.3.0'
       force_rebuild:
         description: 'Rebuild even if a release for this version already exists'
         required: false
