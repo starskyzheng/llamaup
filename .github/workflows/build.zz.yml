@@ -29,7 +29,7 @@ on:
         required: false
         default: 'latest'
       sm_versions:
-        description: 'Comma-separated SM (e.g. 61,120). Blank = every SM that appears in the preset matrix. If an SM is not in the preset, you must also set cuda_version (both required for custom SM×CUDA legs).'
+        description: 'Comma-separated SM (e.g. 61-P4,75-2060,120-5080). Blank = every SM that appears in the preset matrix. If an SM is not in the preset, you must also set cuda_version (both required for custom SM×CUDA legs).'
         required: false
         default: '120'
       cuda_version:
