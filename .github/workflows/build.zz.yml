@@ -51,6 +51,14 @@ on:
         required: false
         default: true
         type: boolean
+      avx_vnni:
+        description: 'GGML_AVX_VNNI: ON (default) or OFF (for CPUs without AVX-VNNI, e.g. older Intel/AMD; avoids illegal-instruction crashes in tinyBLAS)'
+        required: false
+        default: 'ON'
+        type: choice
+        options:
+          - 'ON'
+          - 'OFF'
 
   # client_payload may include: version, source_repo, source_branch, is_backfill, force_rebuild, append_commit_to_release_tag, cuda_version (comma-separated for multiple)
   repository_dispatch:
@@ -395,7 +403,7 @@ jobs:
                 -DGGML_CUDA_FA=ON \
                 -DGGML_CUDA_FA_ALL_QUANTS=ON \
                 -DGGML_NATIVE=OFF \
-                -DGGML_AVX_VNNI=ON \
+                -DGGML_AVX_VNNI=${{ github.event.inputs.avx_vnni || github.event.client_payload.avx_vnni || 'ON' }} \
                 -DGGML_AVX=ON \
                 -DGGML_BMI2=ON \
                 -DGGML_AVX2=ON \
